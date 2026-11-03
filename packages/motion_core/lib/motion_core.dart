@@ -1,6 +1,6 @@
 /// Pure Dart animation primitives for Flutter Motion.
 ///
-/// Springs can be evaluated directly without Flutter or a frame scheduler.
+/// Springs, easing curves, and effects work without Flutter or a frame scheduler.
 ///
 /// ```dart
 /// import 'package:motion_core/motion_core.dart';
@@ -9,4 +9,6 @@
 /// ```
 library;
 
+export 'src/ease.dart';
+export 'src/effect.dart';
 export 'src/spring.dart';

@@ -1028,24 +1028,59 @@ dart run melos run test --no-select
 
 ```dart
 import 'dart:math' as math;
+
 import 'spring.dart';
 
+/// Maps normalized progress to eased progress, which may overshoot 0..1.
+///
+/// ```dart
+/// EaseFn ease = Ease.outCubic;
+/// final progress = ease(0.5);
+/// ```
 typedef EaseFn = double Function(double t);
 
+/// Frame-independent easing functions for normalized progress.
+///
+/// Obtain spring curves during setup and reuse them when evaluating frames.
+///
+/// ```dart
+/// final curve = Ease.spring(bounce: 0.3);
+/// final progress = curve(0.5);
+/// ```
 abstract final class Ease {
+  /// Returns progress unchanged.
+  ///
+  /// ```dart
+  /// final progress = Ease.linear(0.5); // 0.5
+  /// ```
   static double linear(double t) => t;
 
+  /// Decelerates toward one with a cubic curve.
+  ///
+  /// ```dart
+  /// final progress = Ease.outCubic(0.5); // 0.875
+  /// ```
   static double outCubic(double t) {
     final u = 1 - t;
     return 1 - u * u * u;
   }
 
+  /// Accelerates and then decelerates with symmetric cubic segments.
+  ///
+  /// ```dart
+  /// final progress = Ease.inOutCubic(0.5); // 0.5
+  /// ```
   static double inOutCubic(double t) {
     if (t < 0.5) return 4 * t * t * t;
     final u = -2 * t + 2;
     return 1 - u * u * u / 2;
   }
 
+  /// Overshoots one before returning to its endpoint.
+  ///
+  /// ```dart
+  /// final progress = Ease.outBack(0.7); // Greater than 1.
+  /// ```
   static double outBack(double t) {
     const c1 = 1.70158, c3 = c1 + 1;
     final u = t - 1;
@@ -1054,22 +1089,69 @@ abstract final class Ease {
 
   static final _springCache = <double, EaseFn>{};
 
-  /// Пружинная кривая на отрезке [0, 1]: физическое движение, но с
-  /// фиксированной длительностью, поэтому её можно листать (scrub) и реверсировать.
+  /// Returns a cached, fixed-duration spring curve with exact endpoints.
+  ///
+  /// Finite [bounce] is clamped to 0..0.95 by [Spring.bounce]. Nonfinite
+  /// bounce throws [ArgumentError]. Progress at or below zero returns exactly
+  /// zero; progress at or above one returns exactly one. Interior samples use
+  /// the analytical spring at its estimated settling time, allowing overshoot.
+  ///
+  /// ```dart
+  /// final curve = Ease.spring(bounce: 0.3);
+  /// final end = curve(1); // Exactly 1.0.
+  /// ```
   static EaseFn spring({double bounce = 0.3}) =>
       _springCache.putIfAbsent(bounce, () {
-        final s = Spring.bounce(duration: 1, bounce: bounce);
-        final total = s.settleTime;
-        return (double t) => t >= 1
-            ? 1.0
-            : t <= 0
-                ? 0.0
-                : s.solve(from: 0, to: 1, velocity: 0, t: t * total).$1;
+        final spring = Spring.bounce(duration: 1, bounce: bounce);
+        final w0 = math.sqrt(spring.stiffness);
+        final rate = spring.damping / 2;
+        final critical = rate >= w0;
+        final frequency = critical
+            ? 0.0
+            : w0 * math.sqrt(1 - (rate / w0) * (rate / w0));
+        return _SpringEase(
+          spring.settleTime,
+          rate,
+          frequency,
+          critical ? 0 : rate / frequency,
+          critical,
+        ).call;
       });
 
-  /// Затухающий синус (для тряски): значение в [-1, 1].
+  /// Returns a sine wave with a linearly decaying amplitude on 0..1.
+  ///
+  /// [cycles] controls the number of oscillations. The default range is -1..1.
+  ///
+  /// ```dart
+  /// final displacement = Ease.dampedSine(0.125, cycles: 2);
+  /// ```
   static double dampedSine(double t, {double cycles = 4}) =>
       math.sin(t * cycles * 2 * math.pi) * (1 - t);
+}
+
+// Only the position of a unit-mass, 0 -> 1 spring is needed by easing. Preparing
+// these coefficients once avoids the public solve() result record per sample.
+final class _SpringEase {
+  const _SpringEase(
+    this._duration,
+    this._rate,
+    this._frequency,
+    this._coefficient,
+    this._critical,
+  );
+
+  final double _duration, _rate, _frequency, _coefficient;
+  final bool _critical;
+
+  double call(double t) {
+    if (t >= 1) return 1;
+    if (t <= 0) return 0;
+    final time = t * _duration;
+    final decay = math.exp(-_rate * time);
+    if (_critical) return 1 - decay * (1 + _rate * time);
+    final phase = _frequency * time;
+    return 1 - decay * (math.cos(phase) + _coefficient * math.sin(phase));
+  }
 }
 ```
 
@@ -1078,89 +1160,425 @@ abstract final class Ease {
 ```dart
 import 'dart:math' as math;
 
-/// Результат работы всех эффектов за кадр. Один экземпляр на цель, переиспользуется.
+/// Mutable frame output shared by all effects for one animation target.
+///
+/// Reuse one instance, resetting it before evaluating a new frame. Translation
+/// and rotation accumulate by addition; scale and opacity by multiplication.
+///
+/// ```dart
+/// final state = EffectState();
+/// const Fade().apply(state, 0.5);
+/// const Move(fromY: 16).apply(state, 0.5);
+/// ```
 final class EffectState {
-  double opacity = 1;
-  double dx = 0, dy = 0;
-  double scaleX = 1, scaleY = 1;
-  double rotation = 0;
-  double anchorX = 0.5, anchorY = 0.5;
+  /// Creates the identity state.
+  ///
+  /// ```dart
+  /// final state = EffectState();
+  /// ```
+  EffectState();
 
+  /// Multiplied opacity, initially one.
+  ///
+  /// ```dart
+  /// final state = EffectState()..opacity = 0.5;
+  /// ```
+  double opacity = 1;
+
+  /// Horizontal translation, initially zero.
+  ///
+  /// ```dart
+  /// final state = EffectState()..dx = 16;
+  /// ```
+  double dx = 0;
+
+  /// Vertical translation, initially zero.
+  ///
+  /// ```dart
+  /// final state = EffectState()..dy = -16;
+  /// ```
+  double dy = 0;
+
+  /// Horizontal scale, initially one.
+  ///
+  /// ```dart
+  /// final state = EffectState()..scaleX = 0.9;
+  /// ```
+  double scaleX = 1;
+
+  /// Vertical scale, initially one.
+  ///
+  /// ```dart
+  /// final state = EffectState()..scaleY = 0.9;
+  /// ```
+  double scaleY = 1;
+
+  /// Rotation in radians, initially zero.
+  ///
+  /// ```dart
+  /// final state = EffectState()..rotation = 0.5;
+  /// ```
+  double rotation = 0;
+
+  /// Horizontal anchor as a fraction of target width, initially 0.5.
+  ///
+  /// ```dart
+  /// final state = EffectState()..anchorX = 0;
+  /// ```
+  double anchorX = 0.5;
+
+  /// Vertical anchor as a fraction of target height, initially 0.5.
+  ///
+  /// ```dart
+  /// final state = EffectState()..anchorY = 0;
+  /// ```
+  double anchorY = 0.5;
+
+  /// Restores every field to its identity value without replacing the state.
+  ///
+  /// ```dart
+  /// final state = EffectState()..dx = 20;
+  /// state.reset();
+  /// ```
   void reset() {
-    opacity = 1; dx = 0; dy = 0; scaleX = 1; scaleY = 1;
-    rotation = 0; anchorX = 0.5; anchorY = 0.5;
+    opacity = 1;
+    dx = 0;
+    dy = 0;
+    scaleX = 1;
+    scaleY = 1;
+    rotation = 0;
+    anchorX = 0.5;
+    anchorY = 0.5;
   }
 
+  /// Whether translation, scale, or rotation differs from identity.
+  ///
+  /// Opacity and anchors alone do not introduce a transformation.
+  ///
+  /// ```dart
+  /// final transformed = (EffectState()..dx = 1).hasTransform; // true
+  /// ```
   bool get hasTransform =>
       dx != 0 || dy != 0 || scaleX != 1 || scaleY != 1 || rotation != 0;
 }
 
-/// Чистая функция от прогресса [t] (0..1). Никаких аллокаций внутри [apply].
+/// A deterministic effect that accumulates its contribution into frame state.
+///
+/// Implementations must not allocate objects, closures, or collections in
+/// [apply]. They must not retain mutable per-frame state.
+///
+/// ```dart
+/// const Effect effect = Fade();
+/// final state = EffectState();
+/// effect.apply(state, 0.5);
+/// ```
 abstract interface class Effect {
+  /// Whether this effect may change opacity, for compositing decisions.
+  ///
+  /// ```dart
+  /// final usesOpacity = const Fade().affectsOpacity; // true
+  /// ```
   bool get affectsOpacity;
+
+  /// Accumulates this effect at eased progress [t] without resetting [state].
+  ///
+  /// Progress is normally 0..1 but may overshoot when an easing curve does.
+  ///
+  /// ```dart
+  /// const Scale().apply(EffectState(), 0.5);
+  /// ```
   void apply(EffectState state, double t);
 }
 
-double _lerp(double a, double b, double t) => a + (b - a) * t;
+double _lerp(double a, double b, double t) {
+  if (t == 0) return a;
+  if (t == 1) return b;
+  return a + (b - a) * t;
+}
 
+/// Multiplies opacity by an interpolated value.
+///
+/// ```dart
+/// const Fade(from: 1, to: 0).apply(EffectState(), 0.5);
+/// ```
 final class Fade implements Effect {
+  /// Creates an opacity effect, defaulting to zero through one.
+  ///
+  /// ```dart
+  /// const effect = Fade();
+  /// ```
   const Fade({this.from = 0, this.to = 1});
-  final double from, to;
-  @override bool get affectsOpacity => true;
-  @override void apply(EffectState s, double t) => s.opacity *= _lerp(from, to, t);
+
+  /// Initial opacity multiplier.
+  ///
+  /// ```dart
+  /// final initial = const Fade().from; // 0.0
+  /// ```
+  final double from;
+
+  /// Final opacity multiplier.
+  ///
+  /// ```dart
+  /// final target = const Fade().to; // 1.0
+  /// ```
+  final double to;
+
+  /// Always true for an opacity effect.
+  ///
+  /// ```dart
+  /// final usesOpacity = const Fade().affectsOpacity;
+  /// ```
+  @override
+  bool get affectsOpacity => true;
+
+  /// Multiplies the existing opacity instead of replacing it.
+  ///
+  /// ```dart
+  /// const Fade().apply(EffectState(), 0.5);
+  /// ```
+  @override
+  void apply(EffectState state, double t) =>
+      state.opacity *= _lerp(from, to, t);
 }
 
-/// Сдвиг: из (fromX, fromY) в (toX, toY).
+/// Adds translation between two points without changing layout.
+///
+/// ```dart
+/// const Move(fromY: 16).apply(EffectState(), 0.5);
+/// ```
 final class Move implements Effect {
+  /// Creates a translation effect, defaulting to no movement.
+  ///
+  /// ```dart
+  /// const effect = Move(fromX: 20, toY: 10);
+  /// ```
   const Move({this.fromX = 0, this.fromY = 0, this.toX = 0, this.toY = 0});
-  final double fromX, fromY, toX, toY;
-  @override bool get affectsOpacity => false;
+
+  /// Initial horizontal translation.
+  ///
+  /// ```dart
+  /// final initial = const Move(fromX: 16).fromX;
+  /// ```
+  final double fromX;
+
+  /// Initial vertical translation.
+  ///
+  /// ```dart
+  /// final initial = const Move(fromY: 16).fromY;
+  /// ```
+  final double fromY;
+
+  /// Final horizontal translation.
+  ///
+  /// ```dart
+  /// final target = const Move(toX: 16).toX;
+  /// ```
+  final double toX;
+
+  /// Final vertical translation.
+  ///
+  /// ```dart
+  /// final target = const Move(toY: 16).toY;
+  /// ```
+  final double toY;
+
+  /// Always false; translation does not change opacity.
+  ///
+  /// ```dart
+  /// final usesOpacity = const Move().affectsOpacity; // false
+  /// ```
   @override
-  void apply(EffectState s, double t) {
-    s.dx += _lerp(fromX, toX, t);
-    s.dy += _lerp(fromY, toY, t);
+  bool get affectsOpacity => false;
+
+  /// Adds translation to the existing frame state.
+  ///
+  /// ```dart
+  /// const Move(fromY: 16).apply(EffectState(), 0.5);
+  /// ```
+  @override
+  void apply(EffectState state, double t) {
+    state.dx += _lerp(fromX, toX, t);
+    state.dy += _lerp(fromY, toY, t);
   }
 }
 
+/// Multiplies both scale axes by the same interpolated factor.
+///
+/// ```dart
+/// const Scale(from: 0.9, to: 1).apply(EffectState(), 0.5);
+/// ```
 final class Scale implements Effect {
+  /// Creates a uniform scale effect, defaulting to 0.9 through one.
+  ///
+  /// ```dart
+  /// const effect = Scale();
+  /// ```
   const Scale({this.from = 0.9, this.to = 1});
-  final double from, to;
-  @override bool get affectsOpacity => false;
+
+  /// Initial scale multiplier.
+  ///
+  /// ```dart
+  /// final initial = const Scale().from; // 0.9
+  /// ```
+  final double from;
+
+  /// Final scale multiplier.
+  ///
+  /// ```dart
+  /// final target = const Scale().to; // 1.0
+  /// ```
+  final double to;
+
+  /// Always false; scaling does not change opacity.
+  ///
+  /// ```dart
+  /// final usesOpacity = const Scale().affectsOpacity; // false
+  /// ```
   @override
-  void apply(EffectState s, double t) {
-    final k = _lerp(from, to, t);
-    s.scaleX *= k;
-    s.scaleY *= k;
+  bool get affectsOpacity => false;
+
+  /// Multiplies both existing scale axes by the interpolated factor.
+  ///
+  /// ```dart
+  /// const Scale().apply(EffectState(), 0.5);
+  /// ```
+  @override
+  void apply(EffectState state, double t) {
+    final factor = _lerp(from, to, t);
+    state.scaleX *= factor;
+    state.scaleY *= factor;
   }
 }
 
+/// Adds an interpolated rotation measured in radians.
+///
+/// ```dart
+/// const Rotate().apply(EffectState(), 0.5);
+/// ```
 final class Rotate implements Effect {
+  /// Creates a rotation effect, defaulting to one full turn.
+  ///
+  /// ```dart
+  /// const effect = Rotate();
+  /// ```
   const Rotate({this.from = 0, this.to = 2 * math.pi});
-  final double from, to;
-  @override bool get affectsOpacity => false;
-  @override void apply(EffectState s, double t) => s.rotation += _lerp(from, to, t);
+
+  /// Initial rotation in radians.
+  ///
+  /// ```dart
+  /// final initial = const Rotate().from; // 0.0
+  /// ```
+  final double from;
+
+  /// Final rotation in radians.
+  ///
+  /// ```dart
+  /// final target = const Rotate().to;
+  /// ```
+  final double to;
+
+  /// Always false; rotation does not change opacity.
+  ///
+  /// ```dart
+  /// final usesOpacity = const Rotate().affectsOpacity; // false
+  /// ```
+  @override
+  bool get affectsOpacity => false;
+
+  /// Adds rotation to the existing frame state.
+  ///
+  /// ```dart
+  /// const Rotate().apply(EffectState(), 0.5);
+  /// ```
+  @override
+  void apply(EffectState state, double t) =>
+      state.rotation += _lerp(from, to, t);
 }
 
-/// Горизонтальная тряска с затуханием. [t] — линейный прогресс.
+/// Adds a horizontal sine wave whose amplitude decays to zero.
+///
+/// ```dart
+/// const Shake(amplitude: 6, cycles: 4).apply(EffectState(), 0.5);
+/// ```
 final class Shake implements Effect {
+  /// Creates a shake effect for linear progress.
+  ///
+  /// ```dart
+  /// const effect = Shake();
+  /// ```
   const Shake({this.amplitude = 6, this.cycles = 4});
-  final double amplitude, cycles;
-  @override bool get affectsOpacity => false;
+
+  /// Initial maximum displacement.
+  ///
+  /// ```dart
+  /// final distance = const Shake().amplitude; // 6.0
+  /// ```
+  final double amplitude;
+
+  /// Number of oscillations across the full progress interval.
+  ///
+  /// ```dart
+  /// final oscillations = const Shake().cycles; // 4.0
+  /// ```
+  final double cycles;
+
+  /// Always false; shaking does not change opacity.
+  ///
+  /// ```dart
+  /// final usesOpacity = const Shake().affectsOpacity; // false
+  /// ```
   @override
-  void apply(EffectState s, double t) =>
-      s.dx += amplitude * math.sin(t * cycles * 2 * math.pi) * (1 - t);
+  bool get affectsOpacity => false;
+
+  /// Adds the current horizontal displacement without replacing translation.
+  ///
+  /// ```dart
+  /// const Shake().apply(EffectState(), 0.125);
+  /// ```
+  @override
+  void apply(EffectState state, double t) =>
+      state.dx += amplitude * math.sin(t * cycles * 2 * math.pi) * (1 - t);
 }
 
-/// Пульс: масштаб 1 → 1+amount → 1.
+/// Multiplies scale along a single pulse, returning to identity at the end.
+///
+/// ```dart
+/// const Pulse().apply(EffectState(), 0.5);
+/// ```
 final class Pulse implements Effect {
+  /// Creates a pulse that reaches one plus [amount] at its midpoint.
+  ///
+  /// ```dart
+  /// const effect = Pulse(amount: 0.08);
+  /// ```
   const Pulse({this.amount = 0.08});
+
+  /// Added midpoint scale relative to one.
+  ///
+  /// ```dart
+  /// final growth = const Pulse().amount; // 0.08
+  /// ```
   final double amount;
-  @override bool get affectsOpacity => false;
+
+  /// Always false; a pulse does not change opacity.
+  ///
+  /// ```dart
+  /// final usesOpacity = const Pulse().affectsOpacity; // false
+  /// ```
   @override
-  void apply(EffectState s, double t) {
-    final k = 1 + amount * math.sin(t * math.pi);
-    s.scaleX *= k;
-    s.scaleY *= k;
+  bool get affectsOpacity => false;
+
+  /// Multiplies the existing scale axes, preserving exact neutral endpoints.
+  ///
+  /// ```dart
+  /// const Pulse().apply(EffectState(), 0.5);
+  /// ```
+  @override
+  void apply(EffectState state, double t) {
+    if (t == 0 || t == 1) return;
+    final factor = 1 + amount * math.sin(t * math.pi);
+    state.scaleX *= factor;
+    state.scaleY *= factor;
   }
 }
 ```
@@ -1172,6 +1590,16 @@ final class Pulse implements Effect {
 3. При `t = 0` и `t = 1` эффект должен давать «начальное» и «конечное» состояния без скачков.
 
 **Тесты:** для каждого эффекта проверьте `t = 0`, `0.5`, `1`; для `Shake` и `Pulse` — что при `t = 1` смещение равно нулю, масштаб равен 1.
+
+**Уточнения реализации шага 3 в рамках согласованного правила горячего пути.**
+Фабрика Ease.spring кеширует функцию с заранее вычисленными коэффициентами.
+Приватный scalar-расчёт той же траектории не создаёт record через публичный
+Spring.solve на каждом вычислении. Его результат сравнивается с Spring.solve
+в тестах; публичный API не расширяется. Конструирование функции и кеширование
+происходят вне кадрового пути. Интерполяция возвращает точные исходные границы
+при t == 0/1, а Pulse на этих границах не меняет масштаб, устраняя остаток sin(pi).
+Эффекты не ограничивают overshoot и сохраняют остальные поля состояния.
+Подробности — docs/adr/0003-curves-effects.md.
 
 **Готово, когда:** тесты зелёные, кривая `Ease.spring` в конце ровно `1.0`, в начале `0.0`.
 
