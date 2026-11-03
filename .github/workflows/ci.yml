@@ -27,13 +27,13 @@ jobs:
         run: dart run melos run format
       - name: Analyze workspace and core
         run: dart analyze --fatal-infos
-      - name: Test core with coverage
+      - name: Test core and enforce 90 percent line coverage
         run: dart run melos run test:core --no-select
       - name: Upload core coverage
         uses: actions/upload-artifact@v7.0.2
         with:
           name: motion-core-coverage
-          path: packages/motion_core/coverage/
+          path: packages/motion_core/coverage/lcov.info
           if-no-files-found: error
   flutter:
     name: Flutter

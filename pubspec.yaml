@@ -25,6 +25,8 @@ melos:
     test:
       run: dart run melos run test:core --no-select && dart run melos run test:flutter --no-select
     test:core:
-      run: dart run melos exec --no-flutter --dir-exists=test --concurrency=1 --fail-fast -- dart test --coverage=coverage
+      run: dart run melos exec --no-flutter --dir-exists=test --concurrency=1 --fail-fast -- dart test --coverage-path=coverage/lcov.info && dart run melos run coverage:core
+    coverage:core:
+      run: dart run tool/check_coverage.dart packages/motion_core/coverage/lcov.info 90
     test:flutter:
       run: dart run melos exec --flutter --dir-exists=test --concurrency=1 --fail-fast -- flutter test --coverage

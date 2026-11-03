@@ -1,13 +1,12 @@
 import 'dart:io';
 
-// loadLibrary verifies the empty entry point without adding a public symbol.
-// ignore: unused_import
-import 'package:motion_core/motion_core.dart' deferred as motion_core;
+import 'package:motion_core/motion_core.dart';
 import 'package:test/test.dart';
 
 void main() {
-  test('the package entry point loads in the standalone Dart VM', () async {
-    await motion_core.loadLibrary();
+  test('the package entry point works in the standalone Dart VM', () {
+    final (x, v) = Spring.smooth.solve(from: 3, to: 10, velocity: 5, t: 0);
+    expect((x, v), (3, 5));
   });
 
   test('core sources only depend on Dart libraries and their own package', () {
