@@ -1,0 +1,12 @@
+name: motion_core
+description: Pure Dart animation primitives for Flutter Motion, independent of Flutter and dart:ui.
+version: 0.1.0-dev.1
+repository: https://github.com/Salyukovgleb/Flutter-Motion
+issue_tracker: https://github.com/Salyukovgleb/Flutter-Motion/issues
+resolution: workspace
+
+environment:
+  sdk: ^3.11.0
+
+dev_dependencies:
+  test: ^1.25.0

@@ -1,0 +1,19 @@
+name: kinetic_motion
+description: Zero-configuration Flutter animations with composable effects and spring-driven value following.
+version: 0.1.0-dev.1
+repository: https://github.com/Salyukovgleb/Flutter-Motion
+issue_tracker: https://github.com/Salyukovgleb/Flutter-Motion/issues
+resolution: workspace
+
+environment:
+  sdk: ^3.11.0
+  flutter: '>=3.41.2'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  motion_core: ^0.1.0-dev.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter

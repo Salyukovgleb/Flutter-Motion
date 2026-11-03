@@ -1,0 +1,30 @@
+name: flutter_motion_workspace
+publish_to: none
+
+environment:
+  sdk: ^3.11.0
+
+workspace:
+  - packages/motion_core
+  - packages/kinetic_motion
+
+dev_dependencies:
+  lints: ^6.0.0
+  melos: 7.8.2
+
+melos:
+  scripts:
+    analyze:
+      run: dart run melos run analyze:core --no-select && dart run melos run analyze:flutter --no-select
+    analyze:core:
+      run: dart run melos exec --no-flutter --concurrency=1 --fail-fast -- dart analyze --fatal-infos
+    analyze:flutter:
+      run: dart run melos exec --flutter --concurrency=1 --fail-fast -- flutter analyze --fatal-infos --fatal-warnings
+    format:
+      run: dart format --output=none --set-exit-if-changed .
+    test:
+      run: dart run melos run test:core --no-select && dart run melos run test:flutter --no-select
+    test:core:
+      run: dart run melos exec --no-flutter --dir-exists=test --concurrency=1 --fail-fast -- dart test --coverage=coverage
+    test:flutter:
+      run: dart run melos exec --flutter --dir-exists=test --concurrency=1 --fail-fast -- flutter test --coverage

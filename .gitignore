@@ -1,0 +1,12 @@
+.DS_Store
+.dart_tool/
+.packages
+.pub/
+.pub-cache/
+build/
+coverage/
+.idea/
+*.iml
+pubspec_overrides.yaml
+**/pubspec.lock
+!/pubspec.lock

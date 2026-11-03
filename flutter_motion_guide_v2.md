@@ -1,9 +1,126 @@
 # Flutter Motion v2: сверхпростая библиотека анимаций. Спецификация и пошаговое руководство по разработке
 
-> Рабочее название пакета: `motion` (проверьте доступность на pub.dev, запасные варианты: `kinetic_motion`, `flow_motion`).
+> Название проекта: **Flutter Motion**. Имя Flutter-пакета: `kinetic_motion` (согласовано 2026-11-03; имена `motion` и `flutter_motion` уже заняты). Имя ядра: `motion_core`. Вход `.motion()` и имена типов сохраняются.
 > Этот документ заменяет v1: API стал заметно проще, а разработка расписана по шагам с готовым кодом.
 > Все числа про производительность и тайминги — стартовые ориентиры, их нужно подтвердить замерами на реальных устройствах.
 > Код в документе — рабочие заготовки. Перед использованием сверяйте их с актуальными версиями Dart и Flutter (особенно API `vector_math`, `PaintingContext`, `melos`).
+
+---
+
+## Согласованные уточнения от 2026-11-03
+
+Эти уточнения приняты владельцем после предварительной проверки документа.
+Они имеют приоритет над заготовками кода ниже. Заготовки иллюстрируют архитектуру,
+но не являются уже проверенной реализацией. Изменения в код вносятся только на
+соответствующих шагах 1–20. Новые публичные возможности из этих уточнений не следуют.
+
+1. **Имена и бюджет API.** Проект называется Flutter Motion, Flutter-пакет —
+   `kinetic_motion`, точка входа — `package:kinetic_motion/kinetic_motion.dart`.
+   Остальные пять пакетов сохраняют имена из раздела 3.4. Таблица 2.2 содержит
+   12 групп методов, включая перечисленные направленные варианты. Не добавлять
+   `slideStart`, `slideEnd`, `once` или `motion_shaders` без отдельного согласования.
+   Отсутствие имени в реестре pub.dev не резервирует его; перед релизом проверить снова.
+2. **Окружение и workspace.** Исходная проверяемая версия — Flutter 3.41.2,
+   Dart 3.11.0; CI шага 1 закреплён на ней. Минимальная граница SDK — `^3.11.0`,
+   Flutter-пакета — `>=3.41.2`. Melos закреплён на 7.8.2, конфигурация в корневом
+   `pubspec.yaml`. В корне объявлен `lints`, во всех пакетах — `resolution: workspace`,
+   общий lockfile коммитится. Оба CI job устанавливают Flutter: даже чистое ядро
+   входит в общий resolver с Flutter-пакетом. Ядро тестируется обычным `dart test`.
+   Матрицу двух актуальных стабильных Flutter добавить до релиза по разделам 8–9;
+   совместимость вне проверенного SDK пока не заявлять.
+3. **Границы шага 1.** Создать только два начальных пакета с пустыми библиотеками,
+   удалить шаблонные публичные `Calculator`/`Awesome`. Допустимы тесты загрузки,
+   границы Dart-ядра и Flutter test runner. При нуле исполняемых строк процент
+   покрытия неприменим (0/0), не объявлять его равным 100%. При появлении реализации
+   ввести контроль порогов ≥90% для ядра и ≥80% для Flutter-слоя. Расширения
+   создаются на своих шагах, без опережения.
+4. **Matrix4 и слои.** В проверенном vector_math 2.2.0 `setValues` принимает
+   16 double в порядке хранения по столбцам и возвращает void; каскад в шаге 8
+   корректен. `pushTransform` возвращает `TransformLayer?`, `pushOpacity` —
+   `OpacityLayer`. Последний вызывает painter с Offset.zero: покрыть тестами
+   вложенную трансформацию при ненулевом смещении родителя. `LayerHandle` хранить
+   в полях и освобождать через `.layer = null`, как в заготовке.
+5. **Compositing.** Изменение `usesOpacity` у того же экземпляра MotionSource
+   должно обновлять compositing bits. Подписка рендер-объекта должна замечать это
+   изменение, вызывать `markNeedsCompositingBitsUpdate` и `markNeedsPaint`.
+   При opacity == 1 слой прозрачности не создаётся.
+6. **Нажатия.** Кроме `hitTestChildren` и `applyPaintTransform`, переопределить
+   `hitTest` по образцу RenderTransform: базовый RenderBox отсекает смещённые
+   точки за своим исходным размером до вызова hitTestChildren. Ограничения предков
+   сохраняются. Проверить смещение за исходные границы, поворот, масштаб и вырожденную
+   матрицу, а также преобразования для overlay.
+7. **Аллокации.** Гарантия отсутствия покадровых аллокаций относится к коду
+   библиотеки, а не к внутренностям Flutter SDK: сам PaintingContext.pushTransform
+   создаёт матрицу. Внутреннее время хранить числом, не создавать Duration на tick;
+   списки, callbacks, буферы и матрицы готовить вне горячего пути. Для внутренних
+   вычислений пружин избегать временного record; публичный Spring.solve сохраняет
+   сигнатуру из спецификации. Профилировать AOT/profile, отдельно учитывать SDK.
+8. **Композиция этапов.** Будущие этапы не должны менять предыдущие до своего
+   старта. Правило применения каждого будущего клипа с t=0 из шага 4 недостаточно
+   для повторных эффектов одной характеристики через then(). Реализация должна
+   учитывать границы этапов, сохранять детерминированные seek/reverse и отсутствие
+   вспышки до отложенного первого появления. Проверить повторные fade/scale через then.
+9. **Дефолты и параметры.** Раздел 2 и таблица 2.13 имеют приоритет над кодом:
+   appear — fade+slide за общие 350 мс; pop — сжатие от 1 до 0.75 и возврат за
+   350 мс, а не старт с 0.75 за 450 мс. popIn — появление, включая fade. Всем
+   эффектам из таблицы предоставить обещанные duration/delay/curve. Не добавлять
+   исчезновение к pop без требования. Устранить неверные пояснения fadeOut в таблице.
+10. **Reduced motion.** Цепочки мгновенно принимают конечное состояние, включая
+    fadeIn, согласно критерию шага 10 и тесту шага 14. При `.to()` пространственные
+    параметры принимают цель мгновенно, непространственное следование не колеблется.
+    Частицы не создаются. Учитывать `.motion(respectReducedMotion: false)` при
+    переходе к `.to()`, изменение системной настройки в работе и явную spring.
+    Настройку spring при изменении параметра виджета вычислять заново.
+11. **Плееры и lifecycle.** play(fromStart: true) сразу применяет начальное
+    состояние и уведомляет рендер; большие dt корректно проходят несколько циклов.
+    seek вне диапазона детерминирован. Dispose прекращает тики и уведомления,
+    снимает связи контроллеров, сцен и скролла. При смене контроллера/сцены
+    старые связи удаляются. Не перенацеливать неизменившиеся пружины при каждом
+    rebuild. Проверить повторное подключение, pause/reverse и уход виджета.
+12. **Порядок и демо.** Не использовать финальную рекомендацию перескочить
+    с шага 2 к шагу 10. В шаге 10 поздние возможности шагов 12, 13, 17 могут
+    временно иметь минимальные внутренние заглушки; реализация остаётся на своём
+    шаге. Минимальные экраны gallery создавать к проверкам после шагов 5, 8,
+    10, 12, 13. После каждого из них остановиться для проверки владельцем
+    на устройстве. Шаг 18 расширяет уже существующую галерею.
+13. **custom_lint.** Начальная проверенная сигнатура builder 0.8.1:
+    run(CustomLintResolver, ErrorReporter, CustomLintContext). Согласовать версии
+    builder/core/analyzer; не обновлять их независимо. Добавить createPlugin,
+    разрешение типов и проверку продолжения цепочки вместо безусловной диагностики
+    каждого motion(), quick fixes и запуск линтов в CI. Репозиторий custom_lint
+    архивирован; менять технологию без отдельного согласования нельзя.
+14. **Flame.** В опубликованном Flame 1.38.2 есть PositionComponent.position,
+    scale и OpacityProvider. Хранить базовые position/scale/angle/opacity и применять
+    эффекты относительно них; не захватывать повторно уже анимированную позицию.
+    Переиспользовать Vector2 и не создавать Duration в update. Проверить фактические
+    экспортируемые библиотеки и сигнатуры выбранной версии перед шагом 16.
+15. **DevTools.** Расширение пакуется в extension/devtools/{config.yaml,build/}.
+    Указать name, issueTracker, version, materialIconCodePoint, requiresConnection.
+    Корень web-приложения — DevToolsExtension, обращения к VM через serviceManager.
+    Сборка: dart run devtools_extensions build_and_copy --source=. --dest=<extension/devtools>;
+    проверка: dart run devtools_extensions validate --package=<package-root>.
+    Для scrub описать служебную команду управления, одного snapshot недостаточно.
+    Служебные расширения и overlay регистрируются только в debug.
+16. **Частицы.** Пул 256 — заготовка, не подтверждение сценария 5000.
+    Использовать заранее выделенные буферы; простая отрисовка с новыми Offset/Color
+    не удовлетворяет строгому запрету покадровых аллокаций кода библиотеки.
+    Референсное устройство и частоту экрана зафиксировать до приёмки шага 15.
+    FPS и отсутствие аллокаций не считать подтверждёнными unit-тестами.
+17. **Пружины и тестовое время.** damping == 0 допускает незатухающую пружину:
+    settleTime бесконечен, нельзя использовать его как конечную длительность
+    easing. Проверять диапазоны и конечность входов в release, а не только assert.
+    Тесты MotionHost учитывают clamp dt до 0.05: один pump(100.ms) не означает
+    продвижения плеера на 100 мс. В unit-тестах допускается ручной Scheduler.
+18. **Публикация.** Никакая приёмка шага сама по себе не разрешает pub.dev,
+    GitHub Pages или автоматическую публикацию. Действия выполняются только после
+    явного разрешения владельца. Push — в пределах отдельного разрешения владельца.
+
+Источники проверки: локальный Flutter SDK 3.41.2 и исходники vector_math 2.2.0;
+[workspace](https://dart.dev/tools/pub/workspaces),
+[Melos](https://melos.invertase.dev/getting-started),
+[custom_lint API](https://pub.dev/documentation/custom_lint_builder/latest/custom_lint_builder/DartLintRule-class.html),
+[Flame](https://pub.dev/packages/flame),
+[DevTools extensions](https://pub.dev/packages/devtools_extensions).
 
 ---
 
@@ -97,11 +214,11 @@
 
 ```yaml
 dependencies:
-  motion: ^0.1.0
+  kinetic_motion: ^0.1.0
 ```
 
 ```dart
-import 'package:motion/motion.dart';
+import 'package:kinetic_motion/kinetic_motion.dart';
 
 Text('Привет').motion().appear();
 ```
@@ -266,7 +383,7 @@ MotionTheme(
 Режим «уменьшить анимацию» учитывается автоматически (`MediaQuery.disableAnimations`):
 
 - пространственные эффекты (сдвиг, масштаб, поворот, тряска) выполняются мгновенно;
-- пружины с отскоком заменяются плавным затуханием без колебаний;
+- цепочки мгновенно принимают конечное состояние; в `.to()` пространственные параметры сразу принимают цель, непространственные не колеблются;
 - частицы отключаются.
 
 Отключить для конкретного места можно, но не рекомендуется: `.motion(respectReducedMotion: false)`.
@@ -343,7 +460,7 @@ Stack(alignment: Alignment.center, children: [
 
 | Эффект | Длительность | Параметры по умолчанию | Кривая |
 |---|---|---|---|
-| `fadeIn` / `fadeOut` | 300 мс | 0 → 1 | `outCubic` |
+| `fadeIn` / `fadeOut` | 300 мс | 0 → 1 / 1 → 0 | `outCubic` |
 | `slide*` | 350 мс | 16 dp | `outCubic` |
 | `scaleIn` / `scaleOut` | 300 мс | 0,9 ↔ 1 | `outCubic` |
 | `popIn` | 450 мс | 0,6 → 1, отскок из стиля | пружинная кривая |
@@ -366,7 +483,7 @@ Stack(alignment: Alignment.center, children: [
 │ Расширения: motion_particles · motion_flame ·        │
 │ motion_shaders · motion_lints · motion_devtools      │
 ├──────────────────────────────────────────────────────┤
-│ motion (Flutter): .motion(), MotionChain, MotionTo,  │
+│ kinetic_motion (Flutter): .motion(), MotionChain, MotionTo,  │
 │ MotionScene, MotionLayer/RenderMotion, MotionHost    │
 ├──────────────────────────────────────────────────────┤
 │ motion_core (чистый Dart): Spring, Ease, Effect,     │
@@ -411,7 +528,7 @@ SchedulerBinding frame callback
 motion/
 ├─ packages/
 │  ├─ motion_core/          # чистый Dart
-│  ├─ motion/               # Flutter-слой
+│  ├─ kinetic_motion/               # Flutter-слой
 │  ├─ motion_particles/     # Burst, пул частиц
 │  ├─ motion_flame/         # адаптер Flame
 │  ├─ motion_lints/         # правила custom_lint
@@ -439,7 +556,7 @@ motion/
 | Область | Уровень | Где пригодится |
 |---|---|---|
 | Dart 3 (records, sealed/final классы, patterns) | уверенный | Весь код |
-| Flutter: виджеты, `State`, жизненный цикл | уверенный | Слой `motion` |
+| Flutter: виджеты, `State`, жизненный цикл | уверенный | Слой `kinetic_motion` |
 | Flutter: `RenderObject`, `PaintingContext`, слои | базовый, будете учить по ходу | Шаг 8 |
 | Математика: линейная интерполяция, синус/косинус | школьный | Эффекты |
 | Математика: дифференциальные уравнения | достаточно понимать результат; формулы даны в шаге 2 | Пружины |
@@ -478,38 +595,53 @@ motion/
 
 ```bash
 flutter --version && dart --version
-dart pub global activate melos
+dart pub global activate melos 7.8.2
 
 mkdir motion && cd motion && git init
 mkdir -p packages example docs benchmarks .github/workflows
 
 cd packages
 dart create -t package motion_core
-flutter create --template=package motion
+flutter create --template=package kinetic_motion
 cd ..
 ```
 
 **Корневой `pubspec.yaml`** (workspace; для Melos 7 и новее)
 
 ```yaml
-name: motion_workspace
+name: flutter_motion_workspace
 publish_to: none
+
 environment:
-  sdk: ^3.6.0
+  sdk: ^3.11.0
+
 workspace:
   - packages/motion_core
-  - packages/motion
+  - packages/kinetic_motion
+
 dev_dependencies:
-  melos: ^7.0.0
+  lints: ^6.0.0
+  melos: 7.8.2
+
 melos:
   scripts:
     analyze:
-      run: dart analyze --fatal-infos
+      run: dart run melos run analyze:core --no-select && dart run melos run analyze:flutter --no-select
+    analyze:core:
+      run: dart run melos exec --no-flutter --concurrency=1 --fail-fast -- dart analyze --fatal-infos
+    analyze:flutter:
+      run: dart run melos exec --flutter --concurrency=1 --fail-fast -- flutter analyze --fatal-infos --fatal-warnings
     format:
       run: dart format --output=none --set-exit-if-changed .
+    test:
+      run: dart run melos run test:core --no-select && dart run melos run test:flutter --no-select
+    test:core:
+      run: dart run melos exec --no-flutter --dir-exists=test --concurrency=1 --fail-fast -- dart test --coverage=coverage
+    test:flutter:
+      run: dart run melos exec --flutter --dir-exists=test --concurrency=1 --fail-fast -- flutter test --coverage
 ```
 
-В `pubspec.yaml` каждого пакета добавьте строку `resolution: workspace`. Если используете старую версию Melos, вместо workspace заведите `melos.yaml` со списком `packages:`. Сверьтесь с актуальной документацией Melos.
+В `pubspec.yaml` каждого пакета добавьте `resolution: workspace` и `environment.sdk: ^3.11.0`. Flutter-пакет зависит от Flutter SDK и `motion_core: ^0.1.0-dev.1`; ядро не имеет runtime-зависимостей. Общий `pubspec.lock` хранится в Git. Для этого проекта используется Melos 7.8.2; старую конфигурацию `melos.yaml` не добавлять. Команды доступны также через `dart run melos`.
 
 **`analysis_options.yaml`** (в корне)
 
@@ -533,29 +665,64 @@ linter:
 
 ```yaml
 name: ci
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
   core:
-    runs-on: ubuntu-latest
-    defaults: { run: { working-directory: packages/motion_core } }
+    name: Core (Dart)
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dart-lang/setup-dart@v1
-      - run: dart pub get
-      - run: dart format --output=none --set-exit-if-changed .
-      - run: dart analyze --fatal-infos
-      - run: dart test
-  flutter:
-    runs-on: ubuntu-latest
-    defaults: { run: { working-directory: packages/motion } }
-    steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.1
       - uses: subosito/flutter-action@v2
-        with: { channel: stable }
-      - run: flutter pub get
-      - run: dart format --output=none --set-exit-if-changed .
-      - run: flutter analyze --fatal-infos
-      - run: flutter test
+        with:
+          flutter-version: '3.41.2'
+          channel: stable
+          cache: true
+      - name: Resolve shared workspace
+        run: flutter pub get --enforce-lockfile
+      - name: Bootstrap
+        run: dart run melos bootstrap --enforce-lockfile
+      - name: Check formatting
+        run: dart run melos run format
+      - name: Analyze workspace and core
+        run: dart analyze --fatal-infos
+      - name: Test core with coverage
+        run: dart run melos run test:core --no-select
+      - name: Upload core coverage
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: motion-core-coverage
+          path: packages/motion_core/coverage/
+          if-no-files-found: error
+  flutter:
+    name: Flutter
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.2'
+          channel: stable
+          cache: true
+      - name: Resolve shared workspace
+        run: flutter pub get --enforce-lockfile
+      - name: Analyze Flutter packages
+        run: dart run melos run analyze:flutter --no-select
+      - name: Test Flutter packages with coverage
+        run: dart run melos run test:flutter --no-select
+      - name: Upload Flutter coverage
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: kinetic-motion-coverage
+          path: packages/kinetic_motion/coverage/
+          if-no-files-found: error
 ```
 
 **Дополнительно:** добавьте `LICENSE` (MIT или BSD-3), `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md` в каждый пакет, первый ADR (`docs/adr/0001-monorepo.md`).
@@ -1026,7 +1193,7 @@ final class SpringValue implements Tickable {
 
 **Цель:** ноль настройки. Планировщик сам просыпается и засыпает.
 
-**`packages/motion/lib/src/host.dart`**
+**`packages/kinetic_motion/lib/src/host.dart`**
 
 ```dart
 import 'package:flutter/scheduler.dart';
@@ -1683,7 +1850,7 @@ class _MotionChainState extends State<MotionChain> {
 
 - Все остальные методы цепочки (`slideDown`, `slideLeft`, `slideRight`, `scaleOut`) пишутся по образцу `slideUp` и `scaleIn`.
 - `popIn` и `pop` на практике добавляют ещё и прозрачность (`Fade`) отдельным шагом. Сделайте это внутри `popIn`, возвращая два шага.
-- Для RTL-интерфейсов позднее добавьте `slideStart` и `slideEnd`, учитывающие `Directionality`.
+- `slideStart` и `slideEnd` не входят в согласованный API; без отдельного согласования их не добавлять.
 - Если пользователь изменил `trigger` на объект без корректного `==` (например, новый список каждый раз), эффект будет срабатывать на каждую пересборку. Это поведение надо поймать линтом (шаг 17) и описать в документации.
 
 **Готово, когда:** вызов `Text('x').motion().appear()` работает без каких-либо обёрток; hot reload меняет параметры, не перезапуская анимацию; `trigger` не проигрывает эффект при первой сборке; режим reduced motion даёт мгновенное конечное состояние.
@@ -1713,7 +1880,7 @@ extension MotionStaggerX on Iterable<Widget> {
 
 Общая задержка ограничивается `MotionStyle.maxStagger`, поэтому список из 200 элементов не «тянется» почти минуту.
 
-**Подводный камень:** в `ListView.builder` элементы пересоздаются при прокрутке и анимируются заново. Решения: анимировать только первые N элементов (`index < 10 ? w.motion(index: index).appear() : w`) или добавить параметр `once` с запоминанием уже показанных индексов в `PageStorage`.
+**Подводный камень:** в `ListView.builder` элементы пересоздаются при прокрутке и анимируются заново. Решения: анимировать только первые N элементов (`index < 10 ? w.motion(index: index).appear() : w`). Дополнительный параметр `once` не входит в согласованный API и без отдельного согласования не добавляется.
 
 **Готово, когда:** демо «Каскад» из галереи выглядит как в прототипе; в debug-режиме добавление 200 элементов не вызывает дропов кадров.
 
@@ -2068,7 +2235,7 @@ extension MotionGolden on WidgetTester {
 
 Golden-файлы генерируйте и проверяйте только на одной платформе (Linux в CI), иначе шрифты и сглаживание будут давать расхождения. Обновление: `flutter test --update-goldens`.
 
-**Готово, когда:** покрытие слоя `motion` не ниже 80%, в CI есть golden-тесты для всех пресетов из таблицы 2.13.
+**Готово, когда:** покрытие слоя `kinetic_motion` не ниже 80%, в CI есть golden-тесты для всех пресетов из таблицы 2.13.
 
 ---
 
@@ -2393,7 +2560,7 @@ on:
   push:
     tags:
       - 'motion_core-v[0-9]+.[0-9]+.[0-9]+*'
-      - 'motion-v[0-9]+.[0-9]+.[0-9]+*'
+      - 'kinetic_motion-v[0-9]+.[0-9]+.[0-9]+*'
 jobs:
   core:
     if: startsWith(github.ref_name, 'motion_core-v')
@@ -2402,7 +2569,7 @@ jobs:
     with: { working-directory: packages/motion_core }
 ```
 
-Для Flutter-пакета следуйте официальной инструкции pub.dev по публикации Flutter-пакетов через OIDC (шаг публикации выполняется командой `flutter pub publish --force`). Порядок публикации всегда: `motion_core` → `motion` → остальные.
+Для Flutter-пакета следуйте официальной инструкции pub.dev по публикации Flutter-пакетов через OIDC (шаг публикации выполняется командой `flutter pub publish --force`). Порядок публикации всегда: `motion_core` → `kinetic_motion` → остальные.
 
 **6. Версии и совместимость**
 
@@ -2504,7 +2671,7 @@ jobs:
 | Метрика | Порог |
 |---|---|
 | Покрытие `motion_core` | ≥ 90% |
-| Покрытие `motion` | ≥ 80% |
+| Покрытие `kinetic_motion` | ≥ 80% |
 | Предупреждения анализатора | 0 |
 | Документированные публичные символы | 100% |
 
@@ -2527,7 +2694,7 @@ jobs:
 
 1. Обновить версии и CHANGELOG (`melos version` или вручную).
 2. Прогнать полный CI и бенчмарки.
-3. Создать тег `motion_core-vX.Y.Z`, затем `motion-vX.Y.Z`.
+3. Создать тег `motion_core-vX.Y.Z`, затем `kinetic_motion-vX.Y.Z`.
 4. CI публикует пакеты на pub.dev.
 5. Опубликовать заметки о релизе, обновить сайт и playground.
 
@@ -2686,4 +2853,4 @@ jobs:
 
 ---
 
-*Рекомендуемый порядок старта: шаг 1 (репозиторий и CI), затем шаг 2 (пружина с тестами) и сразу шаг 10 в упрощённом виде (`.motion().fadeIn()` без стилей): рабочий результат на экране в первую неделю даёт обратную связь по API раньше всего остального.*
+*Согласованный порядок: шаги 1–20 строго последовательно. Переход к шагу 10 до завершения шагов 3–9 не допускается.*

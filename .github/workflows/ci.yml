@@ -1,0 +1,59 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Core (Dart)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.2'
+          channel: stable
+          cache: true
+      - name: Resolve shared workspace
+        run: flutter pub get --enforce-lockfile
+      - name: Bootstrap
+        run: dart run melos bootstrap --enforce-lockfile
+      - name: Check formatting
+        run: dart run melos run format
+      - name: Analyze workspace and core
+        run: dart analyze --fatal-infos
+      - name: Test core with coverage
+        run: dart run melos run test:core --no-select
+      - name: Upload core coverage
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: motion-core-coverage
+          path: packages/motion_core/coverage/
+          if-no-files-found: error
+  flutter:
+    name: Flutter
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.2'
+          channel: stable
+          cache: true
+      - name: Resolve shared workspace
+        run: flutter pub get --enforce-lockfile
+      - name: Analyze Flutter packages
+        run: dart run melos run analyze:flutter --no-select
+      - name: Test Flutter packages with coverage
+        run: dart run melos run test:flutter --no-select
+      - name: Upload Flutter coverage
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: kinetic-motion-coverage
+          path: packages/kinetic_motion/coverage/
+          if-no-files-found: error
